@@ -36,16 +36,14 @@ export function Sidebar({ isConnected, userEmail, onSignOut }: SidebarProps) {
         <ul className="space-y-2">
           {navigationItems.map((item) => (
             <li key={item.href}>
-              <Link href={item.href}>
-                <a className={cn(
-                  "flex items-center px-4 py-3 rounded-lg font-medium transition-colors",
-                  location === item.href
-                    ? "text-primary-600 bg-primary-50"
-                    : "text-gray-700 hover:bg-gray-100"
-                )} data-testid={`nav-${item.label.toLowerCase().replace(' ', '-')}`}>
-                  <i className={`${item.icon} w-5 h-5 mr-3`}></i>
-                  {item.label}
-                </a>
+              <Link href={item.href} className={cn(
+                "flex items-center px-4 py-3 rounded-lg font-medium transition-colors",
+                location === item.href
+                  ? "text-primary-600 bg-primary-50"
+                  : "text-gray-700 hover:bg-gray-100"
+              )} data-testid={`nav-${item.label.toLowerCase().replace(' ', '-')}`}>
+                <i className={`${item.icon} w-5 h-5 mr-3`}></i>
+                {item.label}
               </Link>
             </li>
           ))}
