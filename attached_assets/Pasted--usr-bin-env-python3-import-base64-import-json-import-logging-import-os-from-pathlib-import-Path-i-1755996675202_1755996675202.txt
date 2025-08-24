@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+import base64
+import json
+import logging
+import os
+from pathlib import Path
+import tkinter as tk
+from tkinter import messagebox
+from typing import List, Dict, Any
+
+from bs4 import BeautifulSoup
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table
+from reportlab.lib.styles import getSampleStyleSheet
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+
+logger = logging.getLogger(__name__)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+
+class GmailProcessor:
+    def __init__(self, rules_file: str = "rules.json"):
+        self.client_secrets_file = "client_secrets.json"
+        self.token_file = "token.json"
+        self.scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+        rules_data = self._load_rules(rules_file)
+        self.rules = rules_data["rules"]
+        default_download_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+        download_dir_str = rules_data.get("download_dir", default_download_dir)
+
+        self.download_dir = Path(os.path.expanduser(download_dir_str))
+        self.download_dir.mkdir(parents=True, exist_ok=True)
+
+        self.creds = self._get_credentials()
+        self.service = build("gmail", "v1", credentials=self.creds)
+
+    def _load_rules(self, rules_file: str) -> dict:
+        with open(rules_file, "r") as f:
+            return json.load(f)
+
+    def _get_credentials(self) -> Credentials:
+        creds = None
+        if os.path.exists(self.token_file):
+            creds = Credentials.from_authorized_user_file(self.token_file, self.scopes)
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                if not os.path.exists(self.client_secrets_file):
+                    raise FileNotFoundError(
+                        "Missing client_secrets.json. Contact the developer for assistance."
+                    )
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    self.client_secrets_file, self.scopes
+                )
+                creds = flow.run_local_server(
+                    port=0,
+                    prompt="consent",
+                    success_message="Authorization complete! You can close this window and return to the app."
+                )
+            with open(self.token_file, "w") as token:
+                token.write(creds.to_json())
+        return creds
+
+    def fetch_emails(self, query: str) -> List[dict]:
+        try:
+            results = (
+                self.service.users()
+                .messages()
+                .list(userId="me", q=query)
+                .execute()
+            )
+            messages = results.get("messages", [])
+            email_data = []
+            for msg in messages:
+                msg_data = (
+                    self.service.users()
+                    .messages()
+                    .get(userId="me", id=msg["id"], format="full")
+                    .execute()
+                )
+                email_data.append(msg_data)
+            logger.info(f"Fetched {len(email_data)} emails for query: {query}")
+            return email_data
+        except Exception as e:
+            logger.error(f"Failed to fetch emails: {e}")
+            return []
+
+    def _extract_field(self, email: dict, soup: BeautifulSoup, field: dict) -> Any:
+        if field["source"] == "header":
+            headers = {h["name"]: h["value"] for h in email["payload"]["headers"]}
+            value = headers.get(field["key"], "Unknown")
+        elif field["source"] == "html":
+            if ":contains(" in field["selector"]:
+                pre_contains, rest = field["selector"].split(":contains('")
+                contains_text, post_contains = rest.split("')", 1)
+                elements = soup.select(pre_contains)
+                element = next((e for e in elements if contains_text in e.text), None)
+                if element and post_contains:
+                    element = element.select_one(post_contains.strip())
+                if not element:
+                    return "Unknown"
+            else:
+                elements = soup.select(field["selector"])
+                element = elements[0] if elements else None
+
+            if not element and not elements:
+                return "Unknown"
+
+            if field["process"] == "extract_text":
+                value = element.get_text(separator=" ").strip()
+            elif field["process"] == "extract_items":
+                items = []
+                special_values = {}
+                for item_elem in elements:
+                    item_data = {}
+                    for subfield in field["subfields"]:
+                        sub_elem = item_elem.select_one(subfield["selector"])
+                        item_data[subfield["name"]] = sub_elem.get_text(
+                            separator=" ").strip() if sub_elem else "Unknown"
+                    # Check if all subfields in subfield_order are present (not "Unknown")
+                    if "subfield_order" in field:
+                        all_subfields_present = all(
+                            item_data.get(name, "Unknown") != "Unknown" for name in field["subfield_order"])
+                        if not all_subfields_present:
+                            continue  # Skip this row if any subfield is "Unknown"
+                    # Check for special values
+                    if "special_values" in field:
+                        for sv in field["special_values"]:
+                            subfield_to_check = sv["subfield"]
+                            if subfield_to_check in item_data and item_data[subfield_to_check] == sv["value"]:
+                                extract_value = item_data[sv["extract_subfield"]]
+                                if "post_process" in sv:
+                                    try:
+                                        extract_value = eval(f"('{extract_value}').{sv['post_process']}")
+                                    except Exception as e:
+                                        logger.warning(f"Post-processing failed for special value {sv['name']}: {e}")
+                                special_values[sv["name"]] = extract_value
+                    # Build and append the item tuple
+                    if "subfield_order" in field:
+                        item_tuple = tuple(item_data.get(name, "Unknown") for name in field["subfield_order"])
+                        items.append(item_tuple)
+                    else:
+                        items.append(tuple(item_data.values()))
+                value = items
+                if "special_values" in field:
+                    value = (items, special_values)
+            else:
+                value = "Unknown"
+        else:
+            value = "Unknown"
+
+        if "post_process" in field and isinstance(value, str):
+            try:
+                value = eval(f"('{value}').{field['post_process']}")
+            except Exception as e:
+                logger.warning(f"Post-processing failed for {field['name']}: {e}")
+                value = value
+
+        return value
+
+    def parse_email(self, email: dict, rule: dict) -> Dict[str, Any]:
+        body = ""
+        if "parts" in email["payload"]:
+            for part in email["payload"]["parts"]:
+                if part["mimeType"] == "text/html" and "data" in part["body"]:
+                    body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
+                    break
+        elif "data" in email["payload"]["body"]:
+            body = base64.urlsafe_b64decode(email["payload"]["body"]["data"]).decode("utf-8", errors="replace")
+
+        soup = BeautifulSoup(body, "html.parser")
+        extracted_data = {}
+        for field in rule["fields"]:
+            value = self._extract_field(email, soup, field)
+            if field["process"] == "extract_items" and "special_values" in field:
+                items, special_values = value
+                extracted_data[field["name"]] = items
+                extracted_data.update(special_values)
+            else:
+                extracted_data[field["name"]] = value
+        return extracted_data
+
+    def email_to_pdf(self, email: dict, output_path: str, rule: dict) -> None:
+        try:
+            data = self.parse_email(email, rule)
+            required_fields = rule.get("required_fields", [])
+            for field in required_fields:
+                if field not in data or data[field] == "Unknown":
+                    logger.warning(f"Skipping PDF generation for email: missing or unknown required field '{field}'")
+                    return
+
+            doc = SimpleDocTemplate(output_path, pagesize=letter)
+            styles = getSampleStyleSheet()
+            story = []
+
+            for section in rule.get("pdf_sections", []):
+                section_type = section["type"]
+
+                if section_type == "paragraph":
+                    field = section["field"]
+                    if field in data:
+                        text = data[field]
+                        if "label" in section:
+                            text = f"{section['label']}{text}"
+                        style = styles[section.get("style", "Normal")]
+                        story.append(Paragraph(text, style))
+
+                elif section_type == "table":
+                    field = section["field"]
+                    if field in data and data[field]:
+                        if "title" in section:
+                            story.append(Paragraph(section["title"], styles["Heading2"]))
+                        table_data = [section["headers"]]
+                        table_data.extend(data[field])
+                        colWidths = [w * inch for w in section["colWidths"]]
+                        table = Table(table_data, colWidths=colWidths)
+                        table.setStyle(section.get("style", []))
+                        story.append(table)
+
+                elif section_type == "spacer":
+                    story.append(Spacer(1, section["height"]))
+
+            doc.build(story)
+            logger.info(f"Saved email to {output_path}")
+        except Exception as e:
+            logger.error(f"Failed to convert email to PDF: {e}")
+
+    def process_emails(self, query: str) -> List[str]:
+        emails = self.fetch_emails(query)
+        results = []
+        for i, email in enumerate(emails):
+            headers = {h["name"]: h["value"] for h in email["payload"]["headers"]}
+            subject = headers.get("Subject", "")
+            from_addr = headers.get("From", "")
+            rule = next((r for r in self.rules if r["pattern"] in subject or r["pattern"] in from_addr), None)
+            if not rule:
+                logger.warning(f"No rule matched for email {i}")
+                continue
+
+            temp_pdf_path = str(self.download_dir / f"email_{i}.pdf")
+            self.email_to_pdf(email, temp_pdf_path, rule)
+
+            data = self.parse_email(email, rule)
+            required_fields = rule.get("required_fields", [])
+            for field in required_fields:
+                if field not in data or data[field] == "Unknown":
+                    logger.warning(f"Skipping result for email {i}: missing or unknown required field '{field}'")
+                    continue
+
+            new_filename = rule["output_template"].format(**data)
+            new_path = str(self.download_dir / new_filename)
+            os.rename(temp_pdf_path, new_path)
+            results.append(f"{new_filename},{data['delivery_date']},${data['total']}")
+
+        return sorted(results)
+
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Gmail Invoice Processor")
+        self.processor = GmailProcessor()
+
+        tk.Label(root, text="Enter email subject to search (e.g., 'Instacart'):").pack(pady=5)
+        self.query_entry = tk.Entry(root, width=50)
+        self.query_entry.pack(pady=5)
+        self.query_entry.insert(0, "Your Instacart")
+
+        tk.Button(root, text="Process Emails", command=self.process).pack(pady=10)
+        self.result_text = tk.Text(root, height=20, width=80)
+        self.result_text.pack(pady=5)
+
+    def process(self):
+        query = self.query_entry.get().strip()
+        if not query:
+            messagebox.showerror("Error", "Please enter a subject to search for")
+            return
+        try:
+            results = self.processor.process_emails(query)
+            self.result_text.delete(1.0, tk.END)
+            self.result_text.insert(tk.END, "\n".join(results))
+            logger.info("Processing complete. Results displayed in GUI.")
+            messagebox.showinfo("Success", "Processing complete! Results are shown below.")
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = App(root)
+    root.mainloop()
