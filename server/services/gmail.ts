@@ -6,13 +6,28 @@ export class GmailService {
   private gmail: any;
 
   constructor() {
+    // Get the redirect URI - use environment variable or construct from Replit domain
+    const redirectUri = process.env.GMAIL_REDIRECT_URI || 
+                       process.env.GOOGLE_REDIRECT_URI ||
+                       this.getRedirectUri();
+
     this.oauth2Client = new google.auth.OAuth2(
       process.env.GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID,
       process.env.GMAIL_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GMAIL_REDIRECT_URI || `${process.env.REPLIT_DOMAINS?.split(',')[0] || 'http://localhost:5000'}/api/auth/gmail/callback`
+      redirectUri
     );
 
     this.gmail = google.gmail({ version: 'v1', auth: this.oauth2Client });
+  }
+
+  private getRedirectUri(): string {
+    // For Replit, use the domain from environment
+    if (process.env.REPLIT_DOMAINS) {
+      const domain = process.env.REPLIT_DOMAINS.split(',')[0];
+      return `https://${domain}/api/auth/gmail/callback`;
+    }
+    // Fallback for local development
+    return 'http://localhost:5000/api/auth/gmail/callback';
   }
 
   getAuthUrl(): string {

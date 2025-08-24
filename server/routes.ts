@@ -25,6 +25,89 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // OAuth callback route - Google redirects here with authorization code
+  app.get("/api/auth/gmail/callback", async (req, res) => {
+    try {
+      const code = req.query.code as string;
+      if (!code) {
+        throw new Error("No authorization code received");
+      }
+
+      const tokens = await gmailService.getTokensFromCode(code);
+      
+      // For demo purposes, update the default user
+      const defaultUser = await storage.getUserByUsername("demo");
+      if (defaultUser) {
+        await storage.updateUser(defaultUser.id, { gmailTokens: tokens });
+      }
+      
+      // Return HTML page that closes the popup and notifies the parent
+      res.send(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Gmail Authorization Complete</title>
+            <style>
+              body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+              .success { color: #4CAF50; }
+              .container { max-width: 400px; margin: 0 auto; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h2 class="success">✓ Gmail Connected Successfully!</h2>
+              <p>You can close this window and return to the application.</p>
+              <script>
+                // Close popup and refresh parent window
+                if (window.opener) {
+                  window.opener.location.reload();
+                  window.close();
+                } else {
+                  // If not in popup, redirect to home
+                  setTimeout(() => {
+                    window.location.href = '/';
+                  }, 2000);
+                }
+              </script>
+            </div>
+          </body>
+        </html>
+      `);
+    } catch (error) {
+      console.error("Gmail callback error:", error);
+      res.send(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Gmail Authorization Error</title>
+            <style>
+              body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+              .error { color: #f44336; }
+              .container { max-width: 400px; margin: 0 auto; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h2 class="error">✗ Authorization Failed</h2>
+              <p>There was an error connecting to Gmail. Please try again.</p>
+              <p><small>${error.message}</small></p>
+              <script>
+                setTimeout(() => {
+                  if (window.opener) {
+                    window.close();
+                  } else {
+                    window.location.href = '/';
+                  }
+                }, 3000);
+              </script>
+            </div>
+          </body>
+        </html>
+      `);
+    }
+  });
+
+  // Legacy POST callback for API clients
   app.post("/api/auth/gmail/callback", async (req, res) => {
     try {
       const { code } = gmailAuthSchema.parse(req.body);
