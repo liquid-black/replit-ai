@@ -156,7 +156,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Build Gmail search query
       let gmailQuery = query;
       if (dateRange && dateRange !== "all") {
-        const days = this.parseDateRange(dateRange);
+        const days = parseDateRange(dateRange);
         if (days) {
           gmailQuery += ` newer_than:${days}d`;
         }
@@ -178,7 +178,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Process emails in background
-      this.processEmailsInBackground(emails, defaultUser.id, job.id);
+      processEmailsInBackground(emails, defaultUser.id, job.id);
 
       res.json({ 
         jobId: job.id, 
@@ -347,8 +347,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   const httpServer = createServer(app);
 
-  // Helper methods
-  (httpServer as any).parseDateRange = function(dateRange: string): number | null {
+  // Helper functions
+  function parseDateRange(dateRange: string): number | null {
     switch (dateRange) {
       case "last7days": return 7;
       case "last30days": return 30;
@@ -357,9 +357,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       case "lastyear": return 365;
       default: return null;
     }
-  };
+  }
 
-  (httpServer as any).processEmailsInBackground = async function(
+  async function processEmailsInBackground(
     emails: any[], 
     userId: string, 
     jobId: string
@@ -446,7 +446,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         status: "failed",
       });
     }
-  };
+  }
 
   return httpServer;
 }

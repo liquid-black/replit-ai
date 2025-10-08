@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,12 +13,7 @@ interface RuleConfigModalProps {
   rule?: ProcessingRule;
 }
 
-export function RuleConfigModal({ isOpen, onClose, onSave, rule }: RuleConfigModalProps) {
-  const [name, setName] = useState(rule?.name || "");
-  const [pattern, setPattern] = useState(rule?.pattern || "");
-  const [outputTemplate, setOutputTemplate] = useState(rule?.outputTemplate || "");
-  const [fieldsJson, setFieldsJson] = useState(
-    rule?.fields ? JSON.stringify(rule.fields, null, 2) : `[
+const defaultFieldsJson = `[
   {
     "name": "trip_date",
     "source": "html",
@@ -31,8 +26,28 @@ export function RuleConfigModal({ isOpen, onClose, onSave, rule }: RuleConfigMod
     "selector": ".total-amount",
     "process": "extract_text"
   }
-]`
-  );
+]`;
+
+export function RuleConfigModal({ isOpen, onClose, onSave, rule }: RuleConfigModalProps) {
+  const [name, setName] = useState("");
+  const [pattern, setPattern] = useState("");
+  const [outputTemplate, setOutputTemplate] = useState("");
+  const [fieldsJson, setFieldsJson] = useState(defaultFieldsJson);
+
+  // Update form state when rule changes
+  useEffect(() => {
+    if (rule) {
+      setName(rule.name);
+      setPattern(rule.pattern);
+      setOutputTemplate(rule.outputTemplate);
+      setFieldsJson(JSON.stringify(rule.fields, null, 2));
+    } else {
+      setName("");
+      setPattern("");
+      setOutputTemplate("");
+      setFieldsJson(defaultFieldsJson);
+    }
+  }, [rule, isOpen]);
 
   const handleSave = () => {
     try {
